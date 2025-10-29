@@ -218,16 +218,18 @@ object PetsGUI {
                 }
             )
 
-            setSlot(
-                plugin.configYml.getInt("gui.toggle.location.row"),
-                plugin.configYml.getInt("gui.toggle.location.column"),
-                slot(togglePetItemBuilder) {
-                    onLeftClick { event, _ ->
-                        val player = event.whoClicked as Player
-                        player.shouldHidePet = !player.shouldHidePet
+            if (plugin.configYml.getInt("gui.toggle.location.row") != -1) {
+                setSlot(
+                    plugin.configYml.getInt("gui.toggle.location.row"),
+                    plugin.configYml.getInt("gui.toggle.location.column"),
+                    slot(togglePetItemBuilder) {
+                        onLeftClick { event, _ ->
+                            val player = event.whoClicked as Player
+                            player.shouldHidePet = !player.shouldHidePet
+                        }
                     }
-                }
-            )
+                )
+            }
 
             for (config in plugin.configYml.getSubsections("gui.custom-slots")) {
                 setSlot(
