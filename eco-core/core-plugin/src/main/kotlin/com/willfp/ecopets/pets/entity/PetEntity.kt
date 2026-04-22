@@ -1,8 +1,7 @@
 package com.willfp.ecopets.pets.entity
 
-import com.willfp.eco.core.EcoPlugin
-import com.willfp.ecopets.EcoPetsPlugin
 import com.willfp.ecopets.pets.Pet
+import com.willfp.ecopets.plugin
 import org.bukkit.Location
 import org.bukkit.attribute.Attribute
 import org.bukkit.entity.ArmorStand
@@ -24,12 +23,12 @@ abstract class PetEntity(
         }
 
         @JvmStatic
-        fun create(plugin: EcoPetsPlugin, pet: Pet): PetEntity {
+        fun create(pet: Pet): PetEntity {
             val texture = pet.entityTexture
 
             if (!texture.contains(":")) {
                 if (plugin.configYml.getBool("pet-entity.item-display.enabled")) {
-                    return ItemDisplayPetEntity(pet, plugin)
+                    return ItemDisplayPetEntity(pet)
                 }
                 return SkullPetEntity(pet)
             }
@@ -41,7 +40,7 @@ abstract class PetEntity(
     }
 }
 
-private fun ArmorStand.applyScale(plugin: EcoPlugin, isSkull: Boolean) {
+private fun ArmorStand.applyScale(isSkull: Boolean) {
     if (!isSkull) return // Only apply scale if it's a skull
 
     val scale = plugin.configYml.getDouble("pet-entity.scale")
@@ -72,7 +71,7 @@ internal fun emptyArmorStandAt(location: Location, pet: Pet, isSkull: Boolean): 
         isCollidable = false
         isPersistent = false
 
-        for (slot in EquipmentSlot.values()) {
+        for (slot in EquipmentSlot.entries) {
             stand.addEquipmentLock(slot, ArmorStand.LockType.ADDING_OR_CHANGING)
         }
 
@@ -80,7 +79,7 @@ internal fun emptyArmorStandAt(location: Location, pet: Pet, isSkull: Boolean): 
         @Suppress("DEPRECATION")
         customName = pet.name
 
-        applyScale(EcoPetsPlugin.instance, isSkull)
+        applyScale(isSkull)
 
     }
 

@@ -12,19 +12,22 @@ import com.willfp.eco.core.items.builder.ItemStackBuilder
 import com.willfp.eco.core.placeholder.PlayerPlaceholder
 import com.willfp.eco.core.placeholder.PlayerStaticPlaceholder
 import com.willfp.eco.core.placeholder.PlayerlessPlaceholder
+import com.willfp.eco.core.placeholder.context.placeholderContext
 import com.willfp.eco.core.recipe.Recipes
 import com.willfp.eco.core.recipe.parts.EmptyTestableItem
+import com.willfp.eco.core.recipe.recipes.CraftingRecipe
 import com.willfp.eco.core.registry.Registrable
 import com.willfp.eco.util.NumberUtils
 import com.willfp.eco.util.NumberUtils.evaluateExpression
-import com.willfp.eco.core.placeholder.context.placeholderContext
 import com.willfp.eco.util.formatEco
 import com.willfp.eco.util.toNiceString
 import com.willfp.eco.util.toNumeral
-import com.willfp.ecopets.EcoPetsPlugin
+import com.willfp.ecopets.api.event.PlayerPetActivateEvent
+import com.willfp.ecopets.api.event.PlayerPetDeactivateEvent
 import com.willfp.ecopets.api.event.PlayerPetExpGainEvent
 import com.willfp.ecopets.api.event.PlayerPetLevelUpEvent
 import com.willfp.ecopets.pets.entity.PetEntity
+import com.willfp.ecopets.plugin
 import com.willfp.ecopets.util.LevelInjectable
 import com.willfp.libreforge.ViolationContext
 import com.willfp.libreforge.conditions.ConditionList
@@ -39,13 +42,12 @@ import org.bukkit.configuration.InvalidConfigurationException
 import org.bukkit.entity.Player
 import org.bukkit.inventory.ItemStack
 import org.bukkit.persistence.PersistentDataType
-import java.util.Objects
+import java.util.*
 import kotlin.math.abs
 
 class Pet(
     val id: String,
-    val config: Config,
-    private val plugin: EcoPetsPlugin
+    val config: Config
 ) : Registrable {
 
     val name = config.getFormattedString("name")
@@ -53,13 +55,13 @@ class Pet(
     val description = config.getFormattedString("description")
 
     val levelKey: PersistentDataKey<Int> = PersistentDataKey(
-        EcoPetsPlugin.instance.namespacedKeyFactory.create("${id}_level"),
+        plugin.namespacedKeyFactory.create("${id}_level"),
         PersistentDataKeyType.INT,
         0
     )
 
     val xpKey: PersistentDataKey<Double> = PersistentDataKey(
-        EcoPetsPlugin.instance.namespacedKeyFactory.create("${id}_xp"), PersistentDataKeyType.DOUBLE, 0.0
+        plugin.namespacedKeyFactory.create("${id}_xp"), PersistentDataKeyType.DOUBLE, 0.0
     )
 
     private val spawnEggBacker: ItemStack? = run {
@@ -102,21 +104,21 @@ class Pet(
     val spawnEgg: ItemStack?
         get() = this.spawnEggBacker?.clone()
 
-    val recipe = run {
-        val egg = spawnEgg
+    val recipe: CraftingRecipe? = spawnEgg
+        ?.takeIf { config.getBool("spawn-egg.craftable") }
+        ?.let { egg ->
+            val recipeStrings = config.getStrings("spawn-egg.recipe")
+            if (recipeStrings.isEmpty()) return@let null
 
-        if (egg == null || !config.getBool("spawn-egg.craftable")) {
-            null
-        } else {
             Recipes.createAndRegisterRecipe(
                 plugin,
-                "${this.id}_spawn_egg",
+                "${id}_spawn_egg",
                 egg,
-                config.getStrings("spawn-egg.recipe"),
-                config.getStringOrNull("spawn-egg.recipe-permission")
+                recipeStrings,
+                config.getStringOrNull("spawn-egg.recipe-permission"),
+                config.getBool("spawn-egg.shapeless")
             )
         }
-    }
 
     val entityTexture = config.getString("entity-texture")
 
@@ -124,9 +126,9 @@ class Pet(
 
     private val levelXpRequirements = listOf(0) + config.getInts("level-xp-requirements")
 
-    val maxLevel = config.getIntOrNull("max-level") ?: levelXpRequirements?.size ?: Int.MAX_VALUE
+    val maxLevel = config.getIntOrNull("max-level") ?: levelXpRequirements.size
 
-    val levelGUI = PetLevelGUI(plugin, this)
+    val levelGUI = PetLevelGUI(this)
 
     private val baseItem: ItemStack = Items.lookup(config.getString("icon")).item
 
@@ -142,14 +144,12 @@ class Pet(
 
     private val levelUpMessages = Caffeine.newBuilder().build<Int, List<String>>()
 
-    private val levelCommands = mutableMapOf<Int, MutableList<String>>()
-
     private val levelPlaceholders = config.getSubsections("level-placeholders")
         .map { sub ->
             LevelPlaceholder(
                 sub.getString("id")
             ) {
-                NumberUtils.evaluateExpression(
+                evaluateExpression(
                     sub.getString("value")
                         .replace("%level%", it.toString())
                 )
@@ -166,10 +166,26 @@ class Pet(
         }
 
         config.injectPlaceholders(
-            PlayerStaticPlaceholder(
-                "level"
-            ) { p ->
-                p.getPetLevel(this).toString()
+            PlayerStaticPlaceholder("percentage_progress") {
+                (it.getPetProgress(this) * 100).toNiceString()
+            },
+            PlayerStaticPlaceholder("current_xp") {
+                it.getPetXP(this).toNiceString()
+            },
+            PlayerStaticPlaceholder("required_xp") {
+                this.getFormattedExpForLevel(it.getPetLevel(this) + 1)
+            },
+            PlayerStaticPlaceholder("description") {
+                this.description
+            },
+            PlayerStaticPlaceholder("pet") {
+                this.name
+            },
+            PlayerStaticPlaceholder("level") {
+                it.getPetLevel(this).toString()
+            },
+            PlayerStaticPlaceholder("level_numeral") {
+                it.getPetLevel(this).toNumeral()
             }
         )
 
@@ -183,7 +199,47 @@ class Pet(
             ViolationContext(plugin, "Pet $id")
         )
 
-        manageLevelCommands(config)
+        PlayerPlaceholder(
+            plugin,
+            "active_pet_level"
+        ) {
+            it.activePet?.let { pet -> it.getPetLevel(pet).toString() } ?: ""
+        }.register()
+
+        PlayerPlaceholder(
+            plugin,
+            "active_pet_level_numeral"
+        ) {
+            it.activePet?.let { pet -> it.getPetLevel(pet).toNumeral() } ?: ""
+        }.register()
+
+        PlayerPlaceholder(
+            plugin,
+            "active_pet_current_xp"
+        ) {
+            it.activePet?.let { pet -> it.getPetXP(pet).toNiceString() } ?: ""
+        }.register()
+
+        PlayerPlaceholder(
+            plugin,
+            "active_pet_required_xp"
+        ) {
+            it.activePet?.let { pet -> pet.getFormattedExpForLevel(it.getPetLevel(pet) + 1) } ?: ""
+        }.register()
+
+        PlayerPlaceholder(
+            plugin,
+            "active_pet_percentage_progress"
+        ) {
+            it.activePet?.let { pet -> (it.getPetProgress(pet) * 100).toNiceString() } ?: ""
+        }.register()
+
+        PlayerPlaceholder(
+            plugin,
+            "active_pet_description"
+        ) {
+            it.activePet?.description ?: ""
+        }.register()
 
         PlayerPlaceholder(
             plugin,
@@ -228,31 +284,6 @@ class Pet(
         }.register()
     }
 
-    @Deprecated("Use level-up-effects instead")
-    private fun manageLevelCommands(config: Config) {
-        if (config.getStrings("level-commands").isNotEmpty()) {
-            plugin.logger.warning("$id pet: The `level-commands` key is deprecated and will be removed in future versions. Switch to `level-up-effects` instead. Refer to the wiki for more info.")
-        }
-        for (string in config.getStrings("level-commands")) {
-            val split = string.split(":")
-
-            if (split.size == 1) {
-                for (level in 1..maxLevel) {
-                    val commands = levelCommands[level] ?: mutableListOf()
-                    commands.add(string)
-                    levelCommands[level] = commands
-                }
-            } else {
-                val level = split[0].toInt()
-
-                val command = string.removePrefix("$level:")
-                val commands = levelCommands[level] ?: mutableListOf()
-                commands.add(command)
-                levelCommands[level] = commands
-            }
-        }
-    }
-
     val levelUpEffects = Effects.compileChain(
         config.getSubsections("level-up-effects"),
         NormalExecutorFactory.create(),
@@ -260,11 +291,11 @@ class Pet(
     )
 
     fun makePetEntity(): PetEntity {
-        return PetEntity.create(plugin, this)
+        return PetEntity.create(this)
     }
 
     fun getLevel(level: Int): PetLevel = levels.get(level) {
-        PetLevel(plugin, this, it, effects, conditions)
+        PetLevel(this, it, effects, conditions)
     }
 
     private fun getLevelUpMessages(level: Int, whitespace: Int = 0): List<String> = levelUpMessages.get(level) {
@@ -426,7 +457,7 @@ class Pet(
      * Get the XP required to reach the next level, if currently at [level].
      */
     fun getExpForLevel(level: Int): Double {
-        if (level < 1 || level > maxLevel) {
+        if (level !in 1..maxLevel) {
             return Double.MAX_VALUE
         }
 
@@ -451,23 +482,6 @@ class Pet(
         }
     }
 
-    @Deprecated("Use level-up-effects instead")
-    fun executeLevelCommands(player: Player, level: Int) {
-        val commands = levelCommands[level] ?: emptyList()
-
-        for (command in commands) {
-            var filledCommand = command.replace("%player%", player.name).replace("%level%", level.toString())
-
-            for (placeholder in levelPlaceholders) {
-                val value = placeholder(level)
-                filledCommand = filledCommand.replace("%${placeholder.id}%", value.toString())
-                filledCommand = filledCommand.replace("%${placeholder.id}_int%", value.toInt().toString())
-                filledCommand = filledCommand.replace("%${placeholder.id}_formatted%", value.toNiceString())
-            }
-
-            Bukkit.dispatchCommand(Bukkit.getConsoleSender(), filledCommand)
-        }
-    }
 
     override fun getID(): String {
         return this.id
@@ -502,18 +516,18 @@ private fun Collection<LevelPlaceholder>.format(string: String, level: Int): Str
 }
 
 private val activePetKey: PersistentDataKey<String> = PersistentDataKey(
-    EcoPetsPlugin.instance.namespacedKeyFactory.create("active_pet"),
+    plugin.namespacedKeyFactory.create("active_pet"),
     PersistentDataKeyType.STRING,
     ""
 )
 
 private val shouldHidePetKey: PersistentDataKey<Boolean> = PersistentDataKey(
-    EcoPetsPlugin.instance.namespacedKeyFactory.create("hide_pet"),
+    plugin.namespacedKeyFactory.create("hide_pet"),
     PersistentDataKeyType.BOOLEAN,
     false
 )
 
-private val petEggKey = EcoPetsPlugin.instance.namespacedKeyFactory.create("pet_egg")
+private val petEggKey = plugin.namespacedKeyFactory.create("pet_egg")
 
 var ItemStack.petEgg: Pet?
     get() = Pets.getByID(this.fast().persistentDataContainer.get(petEggKey, PersistentDataType.STRING) ?: "")
@@ -524,7 +538,18 @@ var ItemStack.petEgg: Pet?
 
 var OfflinePlayer.activePet: Pet?
     get() = Pets.getByID(this.profile.read(activePetKey))
-    set(value) = this.profile.write(activePetKey, value?.id ?: "")
+    set(value) {
+        if (value == null) {
+            val deactivateEvent = PlayerPetDeactivateEvent(this)
+            Bukkit.getPluginManager().callEvent(deactivateEvent)
+            if (deactivateEvent.isCancelled) return
+        } else {
+            val activateEvent = PlayerPetActivateEvent(this, value)
+            Bukkit.getPluginManager().callEvent(activateEvent)
+            if (activateEvent.isCancelled) return
+        }
+        this.profile.write(activePetKey, value?.id ?: "")
+    }
 
 val OfflinePlayer.activePetLevel: PetLevel?
     get() {
