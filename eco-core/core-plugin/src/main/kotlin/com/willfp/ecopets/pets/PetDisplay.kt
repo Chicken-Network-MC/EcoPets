@@ -5,6 +5,7 @@ import com.willfp.eco.util.formatEco
 import com.willfp.ecopets.plugin
 import org.bukkit.Bukkit
 import org.bukkit.Location
+import org.bukkit.World
 import org.bukkit.entity.ArmorStand
 import org.bukkit.entity.Entity
 import org.bukkit.entity.Player
@@ -29,7 +30,7 @@ object PetDisplay : Listener {
 
     fun tickAll() {
         for (player in Bukkit.getOnlinePlayers()) {
-            if (player.isOnline && player.location.chunk.isLoaded && player.location.chunk.isEntitiesLoaded) {
+            if (player.isOnline && isChunkLoaded(player) && player.location.chunk.isEntitiesLoaded) {
                 tickPlayer(player)
             } else {
                 remove(player)
@@ -37,6 +38,13 @@ object PetDisplay : Listener {
         }
 
         tick++
+    }
+
+    fun isChunkLoaded(player: Player): Boolean {
+        val loc = player.location
+        val chunkX = loc.blockX shr 4
+        val chunkZ = loc.blockZ shr 4
+        return player.world.isChunkLoaded(chunkX, chunkZ)
     }
 
     private val smoothYOffsetMap = mutableMapOf<UUID, Double>()
